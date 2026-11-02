@@ -3,6 +3,12 @@
 Development workspace for a Roblox place driven by **Rojo**: scripts and UI live
 as files here, and Rojo syncs them into the open Roblox Studio session.
 
+> **Working directory check.** This file only auto-loads for sessions rooted at
+> or below `roblox-test/`. If you see this and your cwd is the parent
+> `default-workspace`, confirm before acting that you are working *inside*
+> `roblox-test/` — run `pwd` and `git -C roblox-test status` first. Do not treat
+> the sibling `default-workspace` as the project root.
+
 ## Layout
 
 ```
