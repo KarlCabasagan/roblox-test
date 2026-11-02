@@ -27,8 +27,11 @@ end
 -- Applies a move to a copy of the state and returns the new state. The input
 -- state is never modified. Callers are expected to pass a legal move; this
 -- function does not re-validate.
-function Rules.apply(state: Board.GameState, move: Move): Board.GameState
-	local next_ = Board.cloneState(state)
+--
+-- `fast` skips repetition bookkeeping, which the bot's search never reads and
+-- which costs a full position serialization per node.
+function Rules.apply(state: Board.GameState, move: Move, fast: boolean?): Board.GameState
+	local next_ = Board.cloneState(state, fast)
 	local grid = next_.grid
 	local color = move.color
 	local other = Config.Other[color]
@@ -130,8 +133,10 @@ function Rules.apply(state: Board.GameState, move: Move): Board.GameState
 	end
 	next_.turn = other
 
-	local key = Board.positionKey(next_)
-	next_.repetition[key] = (next_.repetition[key] or 0) + 1
+	if not fast then
+		local key = Board.positionKey(next_)
+		next_.repetition[key] = (next_.repetition[key] or 0) + 1
+	end
 
 	return next_
 end

@@ -6,6 +6,10 @@
 --   Medium - 2-ply search with material and mobility evaluation.
 --   Hard   - 3-ply alpha-beta with the same evaluation.
 --
+-- The search is wall-clock bounded. A deep position or a slow machine can
+-- always abandon a partial search and return the best move found so far;
+-- that property is what keeps a bot turn from ever freezing the server.
+--
 -- Everything here is pure: no waits, no state outside the arguments, so it can
 -- be exercised headlessly without Studio's scheduler.
 
@@ -19,6 +23,14 @@ local Bot = {}
 Bot.Difficulties = { "Easy", "Medium", "Hard" }
 
 local MATE_SCORE = 100000
+
+-- Default thinking time per move, in seconds.
+local DEFAULT_BUDGET = 1.0
+
+export type SearchContext = {
+	deadline: number,
+	aborted: boolean,
+}
 
 -- Material balance plus a light mobility term. Pawns get a small push for
 -- advancing, which stops the bot from leaving them parked on their home rank
@@ -47,6 +59,27 @@ local function evaluate(state: Board.GameState, forColor: string): number
 	return score
 end
 
+-- Captures first, biggest victim first. Pruning is only as good as the first
+-- move considered, and a 3-ply search on an opening position needs it.
+local function orderMoves(moves: { Moves.Move })
+	table.sort(moves, function(a, b)
+		local aValue = if a.capture then (Config.PieceValue[a.capture.type] or 0) else -1
+		local bValue = if b.capture then (Config.PieceValue[b.capture.type] or 0) else -1
+		return aValue > bValue
+	end)
+end
+
+local function outOfTime(context: SearchContext): boolean
+	if context.aborted then
+		return true
+	end
+	if os.clock() > context.deadline then
+		context.aborted = true
+		return true
+	end
+	return false
+end
+
 -- Negamax with alpha-beta pruning. `forColor` is the side being optimized;
 -- scores are always returned from that side's point of view.
 local function search(
@@ -55,8 +88,13 @@ local function search(
 	alpha: number,
 	beta: number,
 	forColor: string,
-	ply: number
+	ply: number,
+	context: SearchContext
 ): number
+	if outOfTime(context) then
+		return evaluate(state, forColor)
+	end
+
 	local moves = Rules.legalMovesFor(state, state.turn)
 
 	if #moves == 0 then
@@ -72,10 +110,12 @@ local function search(
 		return evaluate(state, forColor)
 	end
 
+	orderMoves(moves)
+
 	local best = -math.huge
 	for _, move in moves do
-		local child = Rules.apply(state, move)
-		local score = -search(child, depth - 1, -beta, -alpha, Config.Other[state.turn], ply + 1)
+		local child = Rules.apply(state, move, true)
+		local score = -search(child, depth - 1, -beta, -alpha, Config.Other[state.turn], ply + 1, context)
 		if score > best then
 			best = score
 		end
@@ -90,15 +130,25 @@ local function search(
 	return best
 end
 
--- Scores every legal move from the mover's perspective. Used by Medium and
--- Hard so the caller can see how close the choice was, not just the winner.
-local function rankMoves(state: Board.GameState, depth: number): { { move: Moves.Move, score: number } }
+-- Scores every legal move from the mover's perspective.
+local function rankMoves(
+	state: Board.GameState,
+	depth: number,
+	context: SearchContext
+): { { move: Moves.Move, score: number } }
 	local scored = {}
-	for _, move in Rules.legalMoves(state) do
-		local child = Rules.apply(state, move)
-		local score = -search(child, depth - 1, -math.huge, math.huge, Config.Other[state.turn], 1)
+	local moves = Rules.legalMoves(state)
+	orderMoves(moves)
+
+	for _, move in moves do
+		if outOfTime(context) then
+			break
+		end
+		local child = Rules.apply(state, move, true)
+		local score = -search(child, depth - 1, -math.huge, math.huge, Config.Other[state.turn], 1, context)
 		table.insert(scored, { move = move, score = score })
 	end
+
 	return scored
 end
 
@@ -109,8 +159,9 @@ local function randomOf(moves: { Moves.Move }): Moves.Move?
 	return moves[math.random(1, #moves)]
 end
 
--- Picks a move for the side to move at the requested difficulty.
-function Bot.chooseMove(state: Board.GameState, difficulty: string): Moves.Move?
+-- Picks a move for the side to move at the requested difficulty. Returns nil
+-- only when the side has no legal moves at all.
+function Bot.chooseMove(state: Board.GameState, difficulty: string, timeBudget: number?): Moves.Move?
 	local moves = Rules.legalMoves(state)
 	if #moves == 0 then
 		return nil
@@ -120,11 +171,20 @@ function Bot.chooseMove(state: Board.GameState, difficulty: string): Moves.Move?
 		return randomOf(moves)
 	end
 
-	-- Medium searches one reply deeper than its name suggests: a 2-ply search
-	-- is depth 2 including the bot's own move, so the opponent's answer is
-	-- always seen.
+	local budget = timeBudget or DEFAULT_BUDGET
+	local context: SearchContext = {
+		deadline = os.clock() + budget,
+		aborted = false,
+	}
+
 	local depth = if difficulty == "Hard" then 3 else 2
-	local scored = rankMoves(state, depth)
+	local scored = rankMoves(state, depth, context)
+
+	-- If the clock ran out before a single move was scored, fall back to a
+	-- random legal move rather than forcing the caller to handle nil.
+	if #scored == 0 then
+		return randomOf(moves)
+	end
 
 	local bestScore = -math.huge
 	local bestMoves = {}

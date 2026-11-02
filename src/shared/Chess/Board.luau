@@ -151,10 +151,14 @@ function Board.newGame(): GameState
 	return state
 end
 
-function Board.cloneState(state: GameState): GameState
-	local repetition = {}
-	for key, count in state.repetition do
-		repetition[key] = count
+-- `fast` skips the repetition table, which the bot's search never reads. Games
+-- always clone with the full state so threefold detection stays correct.
+function Board.cloneState(state: GameState, fast: boolean?): GameState
+	local repetition = {} :: { [string]: number }
+	if not fast then
+		for key, count in state.repetition do
+			repetition[key] = count
+		end
 	end
 
 	return {
