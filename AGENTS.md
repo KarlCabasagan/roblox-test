@@ -1,4 +1,4 @@
-# robox-test — Roblox + Rojo + Git workflow
+# roblox-test — Roblox + Rojo + Git workflow
 
 Development workspace for a Roblox place driven by **Rojo**: scripts and UI live
 as files here, and Rojo syncs them into the open Roblox Studio session.
@@ -15,19 +15,95 @@ Suffixes matter to Rojo: `*.server.luau` becomes a `Script`, `*.client.luau` a
 `LocalScript`, and plain `*.luau` a `ModuleScript`. A folder `init.luau` becomes
 the module for that folder.
 
-## Environment
+## Session start — read this first
 
-- Rojo 7.7.1 (installed globally via npm, `rojo.cmd` on PATH)
-- Roblox Studio with the Rojo plugin installed
-- Git remote: `https://github.com/KarlCabasagan/roblox-test.git`
+A fresh agent session has no memory of previous conversations. These are the
+facts and traps that are expensive to rediscover.
 
-Start the live sync before working in Studio:
+### The MCP connection and its false negative
+
+Roblox Studio is connected to this agent through the `Roblox_Studio` MCP server,
+which DSH spawns as `cmd.exe /c <LOCALAPPDATA>\Roblox\mcp.bat` (see
+`~/.dsh/profiles/desktop/cordis.patch.yml`).
+
+**Studio's MCP panel often says "No client connected" while the connection is
+fully working.** Studio reports on its own client registry, but traffic actually
+flows through a local `StudioMCP.exe` proxy that Studio dials out to. The panel
+counter never reflects that path. Do not try to "fix" this; do not kill
+`StudioMCP.exe`. Killing the proxy risks breaking a working connection because
+Studio has no way to rediscover a respawned proxy on a new port.
+
+Verify the connection with calls that cannot lie:
+
+1. `list_roblox_studios` — returns the live studio id and place name.
+2. `get_console_output` — returns the current Studio Output log.
+3. `execute_luau` printing a line — the human sees it in Studio Output.
+
+**The studio id changes on every Studio restart.** Never cache it. Always call
+`list_roblox_studios` at the start of a session and before any place-mutating
+call.
+
+### Start the sync server
+
+`rojo serve` does not survive a harness restart. Start it as a background job
+before touching `src/`, then have the human click **Connect** in the Studio Rojo
+plugin (one time per Studio session):
 
 ```powershell
 rojo serve default.project.json
 ```
 
-Then in Studio open the Rojo plugin and click **Connect**.
+The port is chosen dynamically and printed on startup; the plugin defaults to
+the same one.
+
+### Snapshot the place
+
+Scripts are covered by Git. Geometry, lighting, and hand-placed instances are
+not — those live only in the data model. Capture a restore point from Studio's
+own auto-recovery file:
+
+```
+%LOCALAPPDATA%\Roblox\RobloxStudio\AutoSaves\Template_<id>_AutoRecovery_0.rbxl
+```
+
+Copy the newest one matching the open place into `backups/place-<ISO timestamp>.rbxl`
+and commit it. See `backups/README.md` for provenance and restore steps.
+
+There is **no scripting API to export a place**: `StudioService` reports
+`can_save: false`, and `AssetService:SavePlaceAsync` fails with
+`placeID is not valid` on unpublished places. The autosave copy is the only
+automated route.
+
+### Tool scope guardrails
+
+These tools have effects **outside** the place and are not undoable. Do not call
+them unless the human names the specific action or asset:
+
+| Tool | Why it needs consent |
+|---|---|
+| `upload_image` | Uploads assets to their Roblox account; consumes quota |
+| `insert_asset` | Pulls Creator Store / inventory content into the place |
+| `generate_mesh` / `generate_material` / `generate_texture` / `generate_procedural_model` / `generate_scene` | Billed generation against their account |
+
+Read-only tools (`script_read`, `script_grep`, `search_game_tree`,
+`inspect_instance`, `get_console_output`, `get_studio_state`, `screen_capture`)
+need no gate. Prefer them for exploration.
+
+### Working with the data model
+
+- Check `get_studio_state` before calling anything that needs a datamodel type.
+  `Edit` operations are rejected while play mode is running; stop play first.
+- `search_game_tree` output is large. Always pass `path`, `max_depth`, and
+  `head_limit`. A bare full-tree traversal pulls in the `Stats` service and
+  floods context with thousands of useless nodes.
+- After a playtest, stop play mode before making further `Edit` changes.
+
+## Environment
+
+- Rojo 7.7.1 (installed globally via npm, `rojo.cmd` on PATH)
+- Roblox Studio with the Rojo plugin (`Rojo.rbxm` in `%LOCALAPPDATA%\Roblox\Plugins`)
+- Git remote: `https://github.com/KarlCabasagan/roblox-test.git`
+- Place: **Test**, placeId `124568098578723` (published). The id changes per session; resolve it via `list_roblox_studios`.
 
 ## Agent workflow (the rules for this repo)
 
