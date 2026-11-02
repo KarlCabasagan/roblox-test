@@ -8,8 +8,12 @@
 --
 -- Built at run time rather than saved into the place, so the repository stays
 -- the single source of truth for the table's shape.
+--
+-- Every piece is a Model whose parts are built around a local origin and then
+-- placed with Model:PivotTo. Welds are deliberately not used: they have no
+-- effect between anchored parts, which would leave a piece's head behind at
+-- the origin the first time it moved.
 
-local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
 local Chess = require(game.ReplicatedStorage.Shared.Chess)
@@ -20,7 +24,11 @@ local Table = {}
 local TILE = 8
 -- Top surface of the plinth. Squares sit on it; pieces stand on the squares.
 local BOARD_TOP = 2
-local LIFT = 0.5
+-- Distance from the square's surface to the bottom of a piece base. Leaves the
+-- tiles (0.2 thick, centred 0.1 above the plinth) uncovered.
+local LIFT = 0.2
+
+local BASE_HEIGHT = 0.7
 
 local LIGHT_SQUARE = Color3.fromRGB(238, 232, 216)
 local DARK_SQUARE = Color3.fromRGB(92, 98, 116)
@@ -72,7 +80,7 @@ local function makePart(parent: Instance, name: string, size: Vector3, position:
 end
 
 -- Cylinders are authored lying along X, so a vertical column is a cylinder
--- rotated 90 degrees about Z with height carried on its X axis.
+-- rotated 90 degrees about Z with its height carried on the X axis.
 local function makeColumn(parent: Instance, name: string, diameter: number, height: number, bottomY: number, color: Color3): Part
 	local part = makePart(parent, name, Vector3.new(height, diameter, diameter), Vector3.new(0, bottomY + height / 2, 0), color)
 	part.Shape = Enum.PartType.Cylinder
@@ -80,16 +88,10 @@ local function makeColumn(parent: Instance, name: string, diameter: number, heig
 	return part
 end
 
-local function weld(part0: BasePart, part1: BasePart)
-	local constraint = Instance.new("WeldConstraint")
-	constraint.Part0 = part0
-	constraint.Part1 = part1
-	constraint.Parent = part0
-end
-
 -- Adds the head of a piece on top of its column, plus any extra silhouette
--- that makes the custom pieces readable from across the table.
-local function addHead(parent: Instance, pieceType: string, color: Color3, bottomY: number, base: BasePart)
+-- that makes the custom pieces readable from across the table. Everything is
+-- positioned relative to the model origin; the model is moved as a whole.
+local function addHead(parent: Instance, pieceType: string, color: Color3, bottomY: number)
 	local size: Vector3
 	local shape = Enum.PartType.Block
 
@@ -110,30 +112,23 @@ local function addHead(parent: Instance, pieceType: string, color: Color3, botto
 	elseif pieceType == "Hexer" then
 		size = Vector3.new(2.0, 2.0, 2.0)
 	elseif pieceType == "Rift" then
-		size = Vector3.new(1.0, 1.4, 1.0)
+		size = Vector3.new(1.0, 1.6, 1.0)
 	else
 		size = Vector3.new(1.7, 1.7, 1.7)
 		shape = Enum.PartType.Ball
 	end
 
-	local head = makePart(parent, "Head", size, Vector3.new(base.Position.X, bottomY + size.Y / 2, base.Position.Z), color)
+	local center = Vector3.new(0, bottomY + size.Y / 2, 0)
+	local head = makePart(parent, "Head", size, center, color)
 	head.Shape = shape
-	weld(base, head)
 
 	if pieceType == "Hexer" then
 		-- A diamond, tipped so it reads as a crystal rather than a block.
-		head.CFrame = CFrame.new(head.Position) * CFrame.Angles(math.rad(45), 0, math.rad(45))
+		head.CFrame = CFrame.new(center) * CFrame.Angles(math.rad(45), 0, math.rad(45))
 	elseif pieceType == "Rift" then
 		-- Two upright prongs with a gap: a doorway from any angle.
 		for _, offset in { -1.5, 1.5 } do
-			local prong = makePart(
-				parent,
-				"Prong",
-				Vector3.new(0.5, 2.4, 1.0),
-				Vector3.new(base.Position.X + offset, bottomY + 1.2, base.Position.Z),
-				color
-			)
-			weld(base, prong)
+			makePart(parent, "Prong", Vector3.new(0.5, 2.4, 1.0), center + Vector3.new(offset, 0.4, 0), color)
 		end
 	end
 end
@@ -145,22 +140,22 @@ local function createPieceModel(parent: Instance, piece: { type: string, color: 
 	local model = Instance.new("Model")
 	model.Name = piece.color .. piece.type .. tostring(piece.id)
 
-	local baseY = BOARD_TOP + LIFT
-	local base = makePart(model, "Base", Vector3.new(3.6, 0.6, 3.6), Vector3.new(0, 0, 0), color)
+	-- Base disc: a vertical cylinder, so 0.7 tall on its X axis.
+	local base = makePart(model, "Base", Vector3.new(BASE_HEIGHT, 3.6, 3.6), Vector3.new(0, 0, 0), color)
 	base.Shape = Enum.PartType.Cylinder
-	base.Size = Vector3.new(0.7, 3.6, 3.6)
 	base.CFrame = CFrame.new(Vector3.new(0, 0, 0)) * CFrame.Angles(0, 0, math.rad(90))
-	-- The base is the model's anchor, so it carries the square position.
-	base.CFrame = CFrame.new(Vector3.new(0, baseY + 0.35, 0)) * CFrame.Angles(0, 0, math.rad(90))
 
 	local stemHeight = math.max(height * 0.4, 1.2)
-	local stem = makeColumn(model, "Stem", 1.5, stemHeight, baseY + 0.7, color)
-	weld(base, stem)
+	makeColumn(model, "Stem", 1.5, stemHeight, BASE_HEIGHT, color)
+	addHead(model, piece.type, color, BASE_HEIGHT + stemHeight)
 
-	addHead(model, piece.type, color, baseY + 0.7 + stemHeight, base)
-
-	model.PrimaryPart = base
+	-- Deliberately no PrimaryPart: the base carries a 90-degree rotation so its
+	-- cylinder stands upright, and PivotTo would inherit that as the model's
+	-- orientation, swinging the stem and head out sideways. An identity world
+	-- pivot makes PivotTo a pure translation.
+	model.WorldPivot = CFrame.new(0, 0, 0)
 	model.Parent = parent
+
 	return model
 end
 
@@ -196,7 +191,13 @@ function Table.build()
 		for rank = 1, Config.Ranks do
 			local isLight = (file + rank) % 2 == 0
 			local position = Table.squarePosition(file, rank) + Vector3.new(0, 0.1, 0)
-			local part = makePart(tiles, string.format("S%d_%d", file, rank), Vector3.new(TILE, 0.2, TILE), position, if isLight then LIGHT_SQUARE else DARK_SQUARE)
+			local part = makePart(
+				tiles,
+				string.format("S%d_%d", file, rank),
+				Vector3.new(TILE, 0.2, TILE),
+				position,
+				if isLight then LIGHT_SQUARE else DARK_SQUARE
+			)
 			squareParts[squareKey(file, rank)] = part
 		end
 	end
@@ -219,6 +220,12 @@ local function tintSquare(file: number, rank: number, tint: Color3?)
 	if part then
 		part.Color = tint or baseColorOf(file, rank)
 	end
+end
+
+-- World position a piece of this square should be pivoted to. The base is
+-- centred 0.35 above its bottom edge, so the pivot sits half a base higher.
+local function piecePivot(file: number, rank: number): Vector3
+	return Table.squarePosition(file, rank) + Vector3.new(0, LIFT + BASE_HEIGHT / 2, 0)
 end
 
 -- Brings the physical table in line with a wire snapshot: creates, moves, and
@@ -245,21 +252,7 @@ function Table.applySnapshot(snapshot: { squares: { { number } }, lastMove: any 
 			pieceModels[id] = model
 		end
 
-		local primary = model.PrimaryPart
-		if primary then
-			-- The base part's centre sits half its thickness above the lift line,
-			-- which createPieceModel bakes in; match that here or pieces sink.
-			local target = Table.squarePosition(file, rank) + Vector3.new(0, LIFT + 0.35, 0)
-			if (primary.Position - target).Magnitude > 0.05 then
-				-- Rotation is preserved so a tween never spins the piece.
-				local goal = CFrame.new(target) * (primary.CFrame - primary.CFrame.Position)
-				TweenService:Create(
-					primary,
-					TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-					{ CFrame = goal }
-				):Play()
-			end
-		end
+		model:PivotTo(CFrame.new(piecePivot(file, rank)))
 	end
 
 	for id, model in pieceModels do
@@ -289,7 +282,9 @@ function Table.placeSpawn()
 		return
 	end
 	local depth = Config.Ranks * TILE / 2 + 16
-	spawnLocation.CFrame = CFrame.new(Vector3.new(0, 0.5, depth)) * CFrame.Angles(0, math.rad(180), 0)
+	-- A part's front is -Z, and the board sits at the origin, so no rotation is
+	-- needed: the default facing already looks north toward the table.
+	spawnLocation.CFrame = CFrame.new(Vector3.new(0, 0.5, depth))
 	spawnLocation.Size = Vector3.new(12, 1, 12)
 end
 
