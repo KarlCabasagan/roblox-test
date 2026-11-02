@@ -8,18 +8,20 @@ local Players = game:GetService("Players")
 local Shared = require(ReplicatedStorage.Shared)
 
 -- Create (or reuse) the RemoteFunction the client calls.
+local spawnBallRemote: RemoteFunction
 local existing = ReplicatedStorage:FindFirstChild(Shared.REMOTE_NAME)
-if existing and not existing:IsA("RemoteFunction") then
-	existing:Destroy()
-	existing = nil
+
+if existing and existing:IsA("RemoteFunction") then
+	spawnBallRemote = existing :: RemoteFunction
+else
+	-- Destroy any wrong-typed instance squatting on the name first.
+	if existing then
+		existing:Destroy()
+	end
+	spawnBallRemote = Instance.new("RemoteFunction")
+	spawnBallRemote.Name = Shared.REMOTE_NAME
+	spawnBallRemote.Parent = ReplicatedStorage
 end
-
-local spawnBallRemote: RemoteFunction = if existing
-	then existing :: RemoteFunction
-	else Instance.new("RemoteFunction")
-
-spawnBallRemote.Name = Shared.REMOTE_NAME
-spawnBallRemote.Parent = ReplicatedStorage
 
 local response = script:FindFirstChild("SpawnBallResponse")
 if not response then
